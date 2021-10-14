@@ -98,8 +98,8 @@ sudo ./uninstall.sh
 # Documentation
 The **doc** folder includes the following file:
 
-- Readme-EN.md: Brief introduction about PFS, and the steps of quick start with PFS.
-- [PFS_Tools-EN.md](PFS_Tools-EN.md): user manual about the commands of PFS tool.
+- [PFS_Tools-EN.md](docs/PFS_Tools-EN.md): user manual about the commands of PFS
+ tool.
 
 # Software License
 PFS is developed based on[ the open source software license Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

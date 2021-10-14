@@ -102,8 +102,7 @@ sudo ./uninstall.sh
 # 文档
 在docs目录下，包括内容如下：
 
-- Readme-CN.md：PFS的简要介绍，以及安装部署的步骤等说明。
-- [PFS_Tools-CN.md](PFS_Tools-CN.md)：PFS工具的命令使用手册。
+- [PFS_Tools-CN.md](docs/PFS_Tools-CN.md)：PFS工具的命令使用手册。
 
 # License
 PFS基于[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)协议开源。
