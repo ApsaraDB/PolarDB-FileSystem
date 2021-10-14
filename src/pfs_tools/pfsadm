@@ -1,0 +1,799 @@
+#!/usr/bin/env python
+
+# Copyright (c) 2017-2021, Alibaba Group Holding Limited
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import socket
+import struct
+import argparse
+import sys
+import os
+import errno
+import signal
+import time
+from datetime import timedelta
+from collections import namedtuple
+
+PFS_MAX_PBDLEN =        64
+PFS_MAX_PATHLEN =       4096
+PFS_MAX_OPTLEN  =       128 # option name's max length
+FILE_TYPE_PATTERN_MAXLEN = 256
+
+ADM_TRACE       = 7
+ADM_COMMAND     = 9
+ADM_OPTION      = 10
+
+CMD_READ        = 1
+CMD_DU          = 3
+#CMD_STAT        = 5
+CMD_LSOF        = 7
+CMD_MEMSTAT     = 9
+CMD_INFO        = 11
+CMD_IOSTAT      = 13
+CMD_CACHESTAT   = 15
+CMD_MOUNTSTAT   = 17
+CMD_NAMECACHE   = 19
+CMD_NAMECACHE_STAT = 21
+
+IO_READ         = 2
+IO_WRITE        = 3
+IO_NTYPES       = 5
+
+def delta2usec(delta):
+    """convert a timedelta into microseconds
+    """
+    return (delta.days*24*3600 + delta.seconds)*1000000 + delta.microseconds
+
+class SocketHandle(object):
+    '''This is a simple wrapper around a socket file object.
+    It is responsible for connection management and basic read/write
+    operations.
+    '''
+    def __init__(self, pbdname):
+        self.sockname = '/var/run/pfs/pfsadm-%s.sock' % pbdname
+        self.sockfile = None
+        self.bufsize = 16384 # 16K
+
+    def connect(self):
+        if self.sockfile:
+            return
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self.sockname)
+        self.sockfile = sock.makefile('rw', self.bufsize)
+
+    def disconnect(self):
+        if not self.sockfile:
+            return
+        self.sockfile.close()
+        self.sockfile = None
+
+    def write(self, message):
+        self.sockfile.write(message)
+        self.sockfile.flush()
+
+    def read(self, length):
+        data = self.sockfile.read(length)
+        if not data or len(data) != length:
+            sys.stderr.write('failed to read')
+            return errno.EIO, None
+        return 0, data
+
+class AdminOperation(object):
+    '''This is the base and abstract class to describe an admin
+    operation. It defines the main methods of an admin operation:
+    execute() and handle_reply_payload(). execute() defines the
+    general steps for an admin operation. handle_reply_payload() is
+    intended to be overloaded to provide specific behavior for a
+    concrete admin operation. Each concrete admin operation should
+    provide a class method register_options(), which is to register
+    all its options.
+
+    An admin operation actually has two aspects: a request
+    and a reply. Currently a request is composed by one message,
+    which has the format below:
+        header + palyload
+    However, a reply is composed by one or more messages, since a
+    reply may be large. So a reply has the format like below:
+        header + payload-1
+        ...
+        header + payload-n
+        header + NIL
+    Note that the last message has no payload, meaning end of session.
+    The header of both a request and a reply has the same format, as
+    below.
+        int16_t       type
+        int16_t       op
+        int           error
+        int64_t       datalen
+    '''
+    hdrfmt_tuple = ('h', 'h', 'i', 'q') # see the above comment
+
+    admname = [ 'adm-unknown-%d' % (i, ) for i in range(100) ]
+    admname[ADM_TRACE] = 'trace'
+    admname[ADM_COMMAND] = 'command'
+    admname[ADM_OPTION] = 'option'
+
+    cmdname = [ 'cmd-unknown-%d' % (i, ) for i in range(100) ]
+    cmdname[CMD_READ] = 'read'
+    cmdname[CMD_DU] = 'du'
+    cmdname[CMD_LSOF] = 'lsof'
+    cmdname[CMD_MEMSTAT] = 'memstat'
+    cmdname[CMD_INFO] = 'info'
+    cmdname[CMD_IOSTAT] = 'iostat'
+    cmdname[CMD_CACHESTAT] = 'cachestat'
+    cmdname[CMD_NAMECACHE]= "namecache"
+    cmdname[CMD_MOUNTSTAT] = 'mountstat'
+    cmdname[CMD_NAMECACHE_STAT]= "namecachestat"
+
+    def __init__(self, admop, reqop, pbdname, *reqargs):
+        self.admop = admop
+        self.reqop = reqop
+        self.hdrfmts = ''.join(self.hdrfmt_tuple)
+        self.hdrlen = struct.calcsize(self.hdrfmts)
+        self.reqfmts = ''.join(self.reqfmt_tuple)
+        self.reqlen = struct.calcsize(self.reqfmts)
+        self.reqargs = reqargs
+        self.sockhandle = SocketHandle(pbdname)
+
+    def __str__(self):
+        if self.admop == ADM_COMMAND:
+            return self.admname[self.admop] + self.cmdname[self.reqop]
+        return self.admname[self.admop]
+
+    def send_request_msg(self):
+        request = struct.pack(self.hdrfmts + self.reqfmts,
+            self.admop, self.reqop, 0, self.reqlen, *self.reqargs)
+        self.sockhandle.write(request)
+
+    def recv_reply_msg(self):
+        error, payload = 0, ''
+                #print >>sys.stderr, self.hdrlen
+        error, header = self.sockhandle.read(self.hdrlen)
+        if error != 0:
+            return error, None
+
+        admop, rplop, error, payloadlen = struct.unpack(self.hdrfmts, header)
+        error = abs(error)
+                #print >>sys.stderr, admop, rplop, error, rpllen
+        if error != 0:
+            sys.stderr.write('message error %s\n' % os.strerror(error))
+            return error, None
+        if payloadlen == 0:
+            # The server has sent the last msg with nil payload.
+            # This is the end of session.
+            return 0, None
+
+        error, payload = self.sockhandle.read(payloadlen)
+        return error, payload
+
+    def handle_reply_payload(self, payload):
+        '''This is the operation to be overloaded.
+        The default behavior is to print out the payload.
+        '''
+        sys.stdout.write(payload)
+
+    def execute(self):
+        '''The usual steps of executing an request is as follows:
+        1 connect to the admin server.
+        2 send the request msg.
+        3 receive one or more reply messages, and hanle each one
+        4 close the connection.
+        '''
+        self.sockhandle.connect()
+
+        error = 0
+        self.send_request_msg()
+        while True:
+            error, payload = self.recv_reply_msg()
+            if error != 0 or payload is None:
+                break
+            self.handle_reply_payload(payload)
+
+        self.sockhandle.disconnect()
+        return error
+
+class AdminTrace(AdminOperation):
+    """request format is as follows
+    char          file[PFS_MAX_PATHLEN]
+    int           line
+    int           level
+    int           enable
+    """
+    reqfmt_tuple = (str(PFS_MAX_PATHLEN)+'s', 'i', 'i', 'i')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('trace')
+        group = sp.add_mutually_exclusive_group(required=True)
+        group.add_argument('-l', '--list', dest='reqop', action='store_const', const=1)
+        group.add_argument('-s', '--set', dest='reqop',  action='store_const', const=3)
+        sp.add_argument('pbdname')
+        sp.add_argument('filepath', default='*')
+        sp.add_argument('line', type=int, nargs='?', default=0)
+        sp.add_argument('enable', type=int, nargs='?', default=0)
+        sp.set_defaults(reqclass=cls)
+
+    def __init__(self, args):
+        super(AdminTrace, self).__init__(ADM_TRACE, args.reqop, args.pbdname,
+            args.filepath, args.line, 0, args.enable)
+
+class AdminConfig(AdminOperation):
+    """request format is as follows
+    char          name[PFS_MAX_OPTLEN]
+    int64         value
+    """
+    reqfmt_tuple = (str(PFS_MAX_OPTLEN)+'s', 'q')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('config')
+        group = sp.add_mutually_exclusive_group(required=True)
+        group.add_argument('-l', '--list', dest='reqop', action='store_const',
+            const=5)
+        group.add_argument('-s', '--set', dest='reqop',  action='store_const',
+            const=7)
+        group.add_argument('-r', '--reload', dest='reqop', action='store_const',
+            const=9)
+        sp.add_argument('pbdname')
+        sp.add_argument('name', nargs='?', default='*')
+        sp.add_argument('value', type=int, nargs='?', default=0)
+        sp.set_defaults(reqclass=cls)
+
+    def __init__(self, args):
+        super(AdminConfig, self).__init__(ADM_OPTION, args.reqop, args.pbdname,
+            args.name, args.value)
+
+class AdminRead(AdminOperation):
+    """request format is as follows
+    char          file[PFS_MAX_PATHLEN]
+    int64_t       offset
+    int64_t       length
+    """
+    reqfmt_tuple = (str(PFS_MAX_PATHLEN)+'s', 'q', 'q')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('read')
+        sp.add_argument('filepath', type=str)
+        sp.add_argument('-o', '--offset', default='0', type=int)
+        sp.add_argument('-l', '--length', default='-1', type=int)
+        sp.set_defaults(reqclass=cls)
+
+    def __init__(self, args):
+        pbdname = args.filepath.split('/')[1]
+        super(AdminRead, self).__init__(ADM_COMMAND, CMD_READ, pbdname,
+            args.filepath, args.offset, args.length)
+
+class AdminDu(AdminOperation):
+    """request format is as follows
+    char          file[PFS_MAX_PATHLEN]
+    int           depth
+    int           all
+    """
+    reqfmt_tuple = (str(PFS_MAX_PATHLEN)+'s', 'i', 'i')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('du')
+        sp.add_argument('filepath', type=str)
+        sp.add_argument('-d', '--depth', default='-1', type=int,
+            help='max depth, start from 0')
+        sp.add_argument('-a', '--all', action='store_true',
+            help='show all files, not just directories')
+        sp.set_defaults(reqclass=cls)
+
+    def __init__(self, args):
+        pbdname = args.filepath.split('/')[1]
+        super(AdminDu, self).__init__(ADM_COMMAND, CMD_DU, pbdname,
+            args.filepath, args.depth, 1 if args.all else 0)
+
+class AdminStat(AdminOperation):
+    pass
+
+class AdminLsof(AdminOperation):
+    """request format is as follows
+    int           fd
+    """
+    reqfmt_tuple = ('i',)
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('lsof')
+        sp.add_argument('pbdname')
+        sp.add_argument('-f', '--fd', default='-1', type=int,
+            help='specify the fd to list')
+        sp.set_defaults(reqclass=AdminLsof)
+
+    def __init__(self, args):
+        super(AdminLsof, self).__init__(ADM_COMMAND, CMD_LSOF, args.pbdname,
+            -1)
+
+class AdminMemStat(AdminOperation):
+    """request format is as follows
+    int           type
+    """
+    reqfmt_tuple = ('i',)
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('memstat')
+        sp.add_argument('pbdname')
+        sp.add_argument('-t', '--type', default='-1', type=int,
+            help='the mem type to observe(not supported now)')
+        sp.set_defaults(reqclass=cls)
+
+    def __init__(self, args):
+        super(AdminMemStat, self).__init__(ADM_COMMAND, CMD_MEMSTAT, args.pbdname,
+            -1)
+
+class AdminInfo(AdminOperation):
+    """request format is as follows
+    char          pbdname[PFS_MAX_PBDLEN]
+    int           depth
+    """
+    reqfmt_tuple = (str(PFS_MAX_PBDLEN)+'s', 'i')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('info')
+        sp.add_argument('pbdname', type=str)
+        sp.add_argument('-d', '--depth', default='1', type=int,
+            help='max depth, start from 1')
+        sp.set_defaults(reqclass=AdminInfo)
+
+    def __init__(self, args):
+        super(AdminInfo, self).__init__(ADM_COMMAND, CMD_INFO, args.pbdname,
+            args.pbdname, args.depth)
+
+class AdminNameCache(AdminOperation):
+    """request format is as follows
+    int          type
+    """
+    reqfmt_tuple = ('i',)
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('namecache')
+        sp.add_argument('pbdname')
+        sp.add_argument('-t', '--type', default='1', type=int,
+            help='which information, 1: performance data, 2: dump hash table, 3: dump deno hash table')
+        sp.set_defaults(reqclass=AdminNameCache)
+
+    def __init__(self, args):
+        super(AdminNameCache, self).__init__(ADM_COMMAND, CMD_NAMECACHE, args.pbdname,
+            args.type)
+
+
+class DevStat(object):
+    """each devstat format is as follows:
+    char            ds_clustername[448];
+    char            ds_devname[64];
+    int             ds_devtype;
+    int             ds_devflags;
+    uint64_t        ds_start_count;
+    uint64_t        ds_end_count;
+    struct timeval  ds_busy_time;
+    uint64_t        ds_bytes[PFSDEV_REQ_MAX];
+    uint64_t        ds_ops[PFSDEV_REQ_MAX];
+    struct timeval  ds_duration[PFSDEV_REQ_MAX];
+    """
+    field_tuple = ('448s', '64s', 'i', 'i', 'Q', 'Q', 'QQ',  'Q'*5,
+        'Q'*5, 'QQ'*5)
+
+    def __init__(self):
+        self.cluster_name = ''
+        self.device_name = ''
+        self.device_type = 0
+        self.device_flags = 0
+        self.start_count = 0
+        self.end_count = 0
+        self.busy_time = (0, 0)
+        self.io_bytes = (0,) * IO_NTYPES
+        self.io_count = (0,) * IO_NTYPES
+        self.io_duration = (0, 0) * IO_NTYPES
+
+    def load_field(self, fmtindex, buf, offset):
+        return offset + struct.calcsize(self.field_tuple[fmtindex]), \
+               struct.unpack_from(self.field_tuple[fmtindex], buf, offset)
+
+    def load_from_buf(self, buf, offset):
+        oldoff = offset
+        offset, (self.cluster_name,) = self.load_field(0, buf, offset)
+        offset, (self.device_name,) = self.load_field(1, buf, offset)
+        offset, (self.device_type,) = self.load_field(2, buf, offset)
+        offset, (self.device_flags,) = self.load_field(3, buf, offset)
+        offset, (self.start_count,) = self.load_field(4, buf, offset)
+        offset, (self.end_count,) = self.load_field(5, buf, offset)
+        offset, self.busy_time = self.load_field(6, buf, offset)
+        offset, self.io_bytes = self.load_field(7, buf, offset)
+        offset, self.io_count = self.load_field(8, buf, offset)
+        offset, self.io_duration = self.load_field(9, buf, offset)
+        return offset - oldoff
+
+class AdminIostat(AdminOperation):
+    """request format is as follows
+    char          pbdname[PFS_MAX_PBDLEN]
+    """
+    reqfmt_tuple = (str(PFS_MAX_PBDLEN)+'s',)
+
+    """devstat header format is as follows:
+    struct timeval  snap_time
+    int64_t         devstat_count
+    uint64_t        global_epoch
+    """
+    stathdrfmt_tuple = ('QQ', 'q', 'Q')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('iostat')
+        sp.add_argument('pbdname', type=str)
+        sp.add_argument('-c', '--count', default=-1, type=int,
+            help='number of iostat runs')
+        sp.add_argument('-w', '--wait', default=1, type=int,
+            help='wait time of iostat')
+        sp.set_defaults(reqclass=AdminIostat)
+
+    def __init__(self, args):
+        super(AdminIostat, self).__init__(ADM_COMMAND, CMD_IOSTAT, args.pbdname,
+            args.pbdname)
+        self.count = args.count
+        self.wait = args.wait
+        self.last_stat = DevStat()
+        self.last_timestamp = timedelta(0, 0, 0)
+        self.elapsed = 1.0
+
+    def normalize(self, val):
+        if self.elapsed == 1.0:
+            return float(val)
+        return float(val) / self.elapsed
+
+    def calculate_iostat(self, stat):
+        a, b = stat, self.last_stat
+
+        IoStat = namedtuple('IoStat', ['ncount', 'nbytes', 'duration'])
+        iostats = [ IoStat(
+            ncount=a.io_count[i] - b.io_count[i],
+            nbytes=a.io_bytes[i] - b.io_bytes[i],
+            duration=\
+                timedelta(0, a.io_duration[2*i], a.io_duration[2*i+1]) -
+                timedelta(0, b.io_duration[2*i], b.io_duration[2*i+1]))
+            for i in range(IO_NTYPES) ]
+
+        qlen = a.start_count - a.end_count
+
+        busydur = timedelta(0, a.busy_time[0], a.busy_time[1]) - \
+                  timedelta(0, b.busy_time[0], b.busy_time[1])
+        return iostats, qlen, busydur
+
+    def display_stat(self, stat):
+        iostats, qlen, busydur = self.calculate_iostat(stat)
+        rcount, wcount = iostats[IO_READ].ncount, iostats[IO_WRITE].ncount
+        rbytes, wbytes = iostats[IO_READ].nbytes, iostats[IO_WRITE].nbytes
+        rdur, wdur = iostats[IO_READ].duration, iostats[IO_WRITE].duration
+        acount = rcount + wcount
+        adur = rdur + wdur
+        print '%-15s %7d %7d %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f %7.2f' % (
+            stat.device_name,
+            int(self.normalize(rcount)) if rcount > 0 else 0,
+            int(self.normalize(wcount)) if wcount > 0 else 0,
+            self.normalize(rbytes) / (1<<20),
+            self.normalize(wbytes) / (1<<20),
+            float(delta2usec(rdur)) / rcount if rcount > 0 else 0.0,
+            float(delta2usec(wdur)) / wcount if wcount > 0 else 0.0,
+            0.0,
+            float(delta2usec(adur)) / acount if acount > 0 else 0.0,
+            self.normalize(qlen),
+            self.normalize(delta2usec(busydur)) / 10000)
+
+    def handle_reply_payload(self, reply):
+        fmts = ''.join(self.stathdrfmt_tuple)
+        sec, usec, ndevstat, _ = struct.unpack_from(fmts, reply, 0)
+        offset = struct.calcsize(fmts)
+        tscurr = timedelta(0, sec, usec)
+
+        # elapsed is the time interval measured in seconds.
+        # all calculated metrics are normalized against 'elapsed'
+        # as per second metrics.
+        if self.last_timestamp != timedelta(0, 0, 0):
+            tsdiff = tscurr - self.last_timestamp
+            self.elapsed = float(delta2usec(tsdiff)) / 1000000
+        self.last_timestamp = tscurr
+
+        stat = DevStat()
+        while ndevstat > 0:
+            offset += stat.load_from_buf(reply, offset)
+            self.display_stat(stat)
+            self.last_stat = stat
+            ndevstat -= 1
+
+    def iostat(self):
+        self.sockhandle.connect()
+
+        error = 0
+        self.send_request_msg()
+        while True:
+            error, payload = self.recv_reply_msg()
+            if error != 0 or payload is None:
+                break
+            self.handle_reply_payload(payload)
+
+        self.sockhandle.disconnect()
+
+    def execute(self):
+        def sig_alarm_handler(signo, frame):
+            pass
+        signal.signal(signal.SIGALRM, sig_alarm_handler)
+
+        n = 0
+        while self.count < 0 or n < self.count :
+            if n % 20 == 0:
+                print '%-15s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s' % (
+                    'device',
+                    'r/s',
+                    'w/s',
+                    'Mr/s',
+                    'Mw/s',
+                    'us/r',
+                    'us/w',
+                    'us/o',
+                    'us/t',
+                    'qlen',
+                    '%util')
+            self.iostat()
+            n += 1
+
+            signal.setitimer(signal.ITIMER_REAL, self.wait)
+            signal.pause()
+        return 0
+
+class AdminMountstat(AdminOperation):
+    """request format is as follows
+    char          pbdname[PFS_MAX_PBDLEN]
+    int64_t       begin_time;
+    int64_t       time_range;
+    char          file_type[FILE_TYPE_PATTERN_MAXLEN]
+    char          sample_type[FILE_TYPE_PATTERN_MAXLEN]
+    """
+    reqfmt_tuple = (str(PFS_MAX_PBDLEN)+'s', 'q', 'q',
+                    str(FILE_TYPE_PATTERN_MAXLEN)+'s',
+                    str(FILE_TYPE_PATTERN_MAXLEN)+'s')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('mountstat')
+        sp.add_argument('pbdname', type=str)
+        sp.add_argument('-c', '--count', default=-1, type=int,
+                        help='number of stat runs.')
+        sp.add_argument('-w', '--wait', default=1, type=int,
+                        help='wait time of mountsstat')
+        sp.add_argument('-b', '--begin_time', default=0, type=int,
+                        help='begin_time(unix timestamp) of mountsstat')
+        sp.add_argument('-r', '--range', default=0, type=int,
+                        help='range seconds after begin_time. Maximum is 7200')
+        sp.add_argument('-s', '--sample_type', default='', type=str,
+                        help='sample one detail result of one operation. Pattern is '
+                             'file_type:api_type and result will be shown in a color_xx '
+                             'type. For instance, pfsadm mountstat 1-1 -s redo_log:pwrite')
+        sp.add_argument('-f', '--file_type', default='', type=str,
+                        help='special file type to stat.')
+        sp.set_defaults(reqclass=AdminMountstat)
+
+    def __init__(self, args):
+        super(AdminMountstat, self).__init__(ADM_COMMAND, CMD_MOUNTSTAT,
+                                             args.pbdname,
+                                             args.pbdname, args.begin_time,
+                                             args.range, args.file_type,
+                                             args.sample_type)
+        self.count = args.count
+        self.wait = args.wait
+        if args.begin_time > 0 or args.sample_type != '':
+            self.count = 1
+
+    def execute(self):
+        def sig_alarm_handler(signo, frame):
+            pass
+        signal.signal(signal.SIGALRM, sig_alarm_handler)
+
+        n = 0
+        while self.count < 0 or n < self.count :
+            super(AdminMountstat, self).execute()
+            n += 1
+
+            signal.setitimer(signal.ITIMER_REAL, self.wait)
+            signal.pause()
+        return 0
+
+class NameCacheStat(object):
+    """each namecachestat format is as follows:
+    unsigned long hashsize;
+    unsigned long numcache;
+    unsigned long numchecks;
+    unsigned long numhits;
+    unsigned long nummiss;
+    unsigned long numdelbydeno;
+    unsigned long numdelbyname;
+    unsigned long numevicts;
+    unsigned long numrejects;
+    """
+    field_tuple = ('Q', 'Q', 'Q', 'Q', 'Q', 'Q', 'Q', 'Q', 'Q')
+
+    def __init__(self):
+        self.hashsize = 0
+        self.numcache = 0
+        self.numchecks = 0
+        self.numhits = 0
+        self.nummiss = 0
+        self.numdelbydeno = 0
+        self.numdelbyname = 0
+        self.numevicts = 0;
+        self.numrejects = 0
+
+    def load_field(self, fmtindex, buf, offset):
+        return offset + struct.calcsize(self.field_tuple[fmtindex]), \
+               struct.unpack_from(self.field_tuple[fmtindex], buf, offset)
+
+    def load_from_buf(self, buf, offset):
+        oldoff = offset
+        offset, (self.hashsize,) = self.load_field(0, buf, offset)
+        offset, (self.numcache,) = self.load_field(1, buf, offset)
+        offset, (self.numchecks,) = self.load_field(2, buf, offset)
+        offset, (self.numhits,) = self.load_field(3, buf, offset)
+        offset, (self.nummiss,) = self.load_field(4, buf, offset)
+        offset, (self.numdelbydeno,) = self.load_field(5, buf, offset)
+        offset, (self.numdelbyname,) = self.load_field(6, buf, offset)
+        offset, (self.numevicts,) = self.load_field(7, buf, offset)
+        offset, (self.numrejects,) = self.load_field(8, buf, offset)
+        return offset - oldoff
+
+class AdminNameCacheStat(AdminOperation):
+    """request format is as follows
+    int          unused
+    """
+    reqfmt_tuple = ('i',)
+
+    stathdrfmt_tuple = ('QQ')
+
+    @classmethod
+    def register_options(cls, subparsers):
+        sp = subparsers.add_parser('namecachestat')
+        sp.add_argument('pbdname')
+        sp.add_argument('-c', '--count', default=-1, type=int,
+            help='number of runs')
+        sp.add_argument('-w', '--wait', default=1, type=int,
+            help='wait time')
+        sp.set_defaults(reqclass=AdminNameCacheStat)
+
+    def __init__(self, args):
+        super(AdminNameCacheStat, self).__init__(ADM_COMMAND,
+             CMD_NAMECACHE_STAT, args.pbdname, 1)
+        self.count = args.count
+        self.wait = args.wait
+        self.last_stat = NameCacheStat()
+        self.last_timestamp = timedelta(0, 0, 0)
+        self.elapsed = 1.0
+
+    def normalize(self, val):
+        if self.elapsed == 1.0:
+            return float(val)
+        return float(val) / self.elapsed
+
+    def calc_stat(self, stat):
+        self.delta_checks = stat.numchecks - self.last_stat.numchecks
+        self.delta_hits   = stat.numhits - self.last_stat.numhits
+        self.delta_miss   = stat.nummiss - self.last_stat.nummiss
+        self.delta_evicts = stat.numevicts - self.last_stat.numevicts
+        self.delta_dels   = (stat.numdelbydeno + stat.numdelbyname) -\
+             (self.last_stat.numdelbydeno + self.last_stat.numdelbyname)
+        self.delta_rejects= stat.numrejects - self.last_stat.numrejects
+
+    def display_stat(self, stat):
+        if self.delta_hits + self.delta_miss != 0 :
+           hitratio = float(self.delta_hits) * 100 / (self.delta_hits + self.delta_miss)
+        else :
+           hitratio = 0
+        timestamp = time.localtime(self.last_timestamp.seconds)
+        print "%02d:%02d:%02d   %8d %10d %10d %8.2f %8d %8d %8d" % (
+              timestamp[3], timestamp[4], timestamp[5], \
+              stat.numcache, \
+              int(self.normalize(self.delta_hits)) if self.delta_hits > 0 else 0, \
+              int(self.normalize(self.delta_miss)) if self.delta_miss > 0 else 0, \
+              hitratio, \
+              int(self.normalize(self.delta_evicts)) if self.delta_evicts > 0 else 0, \
+              int(self.normalize(self.delta_dels)) if self.delta_dels > 0 else 0, \
+              int(self.normalize(self.delta_rejects)) if self.delta_rejects > 0 else 0 \
+              )
+
+    def handle_reply_payload(self, reply):
+        """packet format: timeval, namecachestat"""
+        fmts = ''.join(self.stathdrfmt_tuple)
+        sec, usec = struct.unpack_from(fmts, reply, 0)
+        offset = struct.calcsize(fmts)
+        tscurr = timedelta(0, sec, usec)
+        display = True
+        if self.last_timestamp != timedelta(0, 0, 0):
+            tsdiff = tscurr - self.last_timestamp
+            self.elapsed = float(delta2usec(tsdiff)) / 1000000
+        else:
+            display= False
+        self.last_timestamp = tscurr
+
+        stat = NameCacheStat()
+        offset += stat.load_from_buf(reply, offset)
+        self.calc_stat(stat)
+        if display:
+            self.display_stat(stat)
+        self.last_stat = stat
+
+    def do_stat(self):
+        self.sockhandle.connect()
+
+        error = 0
+        self.send_request_msg()
+        while True:
+            error, payload, need_replay_break = self.recv_reply_msg()
+            if error != 0 or payload is None:
+                break
+            self.handle_reply_payload(payload)
+
+        self.sockhandle.disconnect()
+
+    def execute(self):
+        n = 0
+        while self.count < 0 or n < self.count :
+            if n % 20 == 0:
+                print "%8s %10s %10s %10s %8s %8s %8s %8s" % (
+                    'time',
+                    'numcache',
+                    'hit/s',
+                    'miss/s',
+                    'hit%/s',
+                    'evict/s',
+                    'del/s',
+                    'reject/s')
+
+            self.do_stat()
+            n += 1
+            time.sleep(self.wait)
+        return 0
+
+def main():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(title='subcommands', dest='cmdname')
+    AdminTrace.register_options(subparsers)
+    AdminConfig.register_options(subparsers)
+    AdminRead.register_options(subparsers)
+    AdminDu.register_options(subparsers)
+    AdminLsof.register_options(subparsers)
+    AdminMemStat.register_options(subparsers)
+    AdminInfo.register_options(subparsers)
+    AdminIostat.register_options(subparsers)
+    AdminMountstat.register_options(subparsers)
+    AdminNameCache.register_options(subparsers)
+    AdminNameCacheStat.register_options(subparsers)
+
+    err = 0
+    args = parser.parse_args()
+    try:
+        req = args.reqclass(args)
+        err = req.execute()
+        if err != 0:
+            sys.stderr.write('command %s failed: %s\n' % (req, os.strerror(err)))
+    except socket.error as e:
+        sys.stderr.write('exception occured while handle command: %s\n' % e)
+        err = e.errno
+    except KeyboardInterrupt as e:
+        print "exit"
+    sys.exit(err)
+
+if __name__ == '__main__':
+    main()
