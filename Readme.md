@@ -74,7 +74,9 @@ sudo /usr/local/polarstore/pfsd/bin/clean_pfsd.sh nvme1n1
 
 ##### 5. Use the PFS tool to check whether PFS is running as expected. 
 
-   Perform common operations on files to verify that PFS is running as expected. For more information, see Instruction to the [PFS tool](PFS_Tools-EN.md). 
+   Perform common operations on files to verify that PFS is running as
+    expected. For more information, see Instruction to the [PFS tool
+    ](docs/PFS_Tools-EN.md). 
    For example, you can run the following commands to view the new file hello.txt:
 
 ```

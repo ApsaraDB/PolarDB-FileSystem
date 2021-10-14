@@ -75,7 +75,7 @@ sudo /usr/local/polarstore/pfsd/bin/clean_pfsd.sh nvme1n1
 
 ##### 5. 使用PFS工具进行检查。
 
-   参照[PFS工具使用说明](PFS_Tools-CN.md)，进行常见的文件操作，验证文件系统是否正确安装。
+   参照[PFS工具使用说明](docs/PFS_Tools-CN.md)，进行常见的文件操作，验证文件系统是否正确安装。
    例如使用如下命令，可以查看创建的新文件 hello.txt：
 
 ```bash
