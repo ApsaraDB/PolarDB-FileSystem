@@ -132,7 +132,8 @@ struct direntplus *pfs_readdirplus(DIR *dir);
 	  || strncmp(path, "/vd", 3) == 0				\
 	  || strncmp(path, "/nvme", 5) == 0				\
 	  || strncmp(path, "/loop", 5) == 0				\
-	  || strncmp(path, "/mapper_", 8) ==0))
+	  || strncmp(path, "/mapper_", 8) ==0			\
+	  || strncmp(path, "/rbd", 4) ==0))
 
 #define PFS_DIR_ISVALID(dir)						\
 	( (dir) && ( (intptr_t)(dir) & 0x01 ) )
