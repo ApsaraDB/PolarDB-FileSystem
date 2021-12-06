@@ -28,16 +28,19 @@ if [ -f "${INSTALL_BASE_DIR}/pfsd/include/pfsd_sdk.h" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/lib/libpfsd.a" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/lib/libpfsd_test.so" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/bin/pfsdaemon" ] || \
+[ -f "${INSTALL_BASE_DIR}/pfsd/bin/pfs-fuse" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/bin/pfsd_shm_tool" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/conf/pfsd_logger.conf" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/bin/start_pfsd.sh" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/bin/stop_pfsd.sh" ] || \
+[ -f "${INSTALL_BASE_DIR}/pfsd/bin/mount_pfs_fuse.sh" ] || \
+[ -f "${INSTALL_BASE_DIR}/pfsd/bin/umount_pfs_fuse.sh" ] || \
 [ -f "${INSTALL_BASE_DIR}/pfsd/bin/clean_pfsd.sh" ] || \
 [ -f "/etc/init.d/pfsd_env" ] || \
 [ -f "/etc/polarfs.conf" ] || \
 [ -f "/usr/local/bin/pfs" ] || \
 [ -f "/usr/local/bin/pfsadm" ];then
-	echo "pfsd has installed, install failed"
+	echo "pfsd/fuse has installed, install failed"
 	exit 1
 fi
 
@@ -45,10 +48,13 @@ if [ ! -f "src/pfs_sdk/pfsd_sdk.h" ] || \
 [ ! -f "lib/libpfsd.a" ] || \
 [ ! -f "lib/libpfsd_test.so" ] || \
 [ ! -f "bin/pfsdaemon" ] || \
+[ ! -f "bin/pfs-fuse" ] || \
 [ ! -f "bin/pfsd_shm_tool" ] || \
 [ ! -f "conf/pfsd_logger.conf" ] || \
 [ ! -f "deploy_scripts/start_pfsd.sh" ] || \
 [ ! -f "deploy_scripts/stop_pfsd.sh" ] || \
+[ ! -f "deploy_scripts/mount_pfs_fuse.sh" ] || \
+[ ! -f "deploy_scripts/umount_pfs_fuse.sh" ] || \
 [ ! -f "deploy_scripts/clean_pfsd.sh" ] || \
 [ ! -f "src/pfsd/pfsd.init" ] || \
 [ ! -f "etc/polarfs.conf" ] || \
@@ -59,7 +65,7 @@ if [ ! -f "src/pfs_sdk/pfsd_sdk.h" ] || \
 fi
 
 if [[ $EUID -ne 0 ]];then
-	echo "pfsd install script must be run as root"
+	echo "pfsd/fuse install script must be run as root"
 	exit 1
 fi
 
@@ -68,10 +74,13 @@ install -m 0644 src/pfs_sdk/pfsd_sdk.h			${INSTALL_BASE_DIR}/pfsd/include/pfsd_s
 install -m 0755 lib/libpfsd.a				${INSTALL_BASE_DIR}/pfsd/lib/libpfsd.a
 install -m 0755 lib/libpfsd_test.so			${INSTALL_BASE_DIR}/pfsd/lib/libpfsd_test.so
 install -m 0755 bin/pfsdaemon				${INSTALL_BASE_DIR}/pfsd/bin/pfsdaemon
+install -m 0755 bin/pfs-fuse                            ${INSTALL_BASE_DIR}/pfsd/bin/pfs-fuse
 install -m 0755 bin/pfsd_shm_tool			${INSTALL_BASE_DIR}/pfsd/bin/pfsd_shm_tool
 install -m 0644 conf/pfsd_logger.conf			${INSTALL_BASE_DIR}/pfsd/conf/pfsd_logger.conf
 install -m 0755 deploy_scripts/start_pfsd.sh		${INSTALL_BASE_DIR}/pfsd/bin/start_pfsd.sh
 install -m 0755 deploy_scripts/stop_pfsd.sh		${INSTALL_BASE_DIR}/pfsd/bin/stop_pfsd.sh
+install -m 0755 deploy_scripts/mount_pfs_fuse.sh	${INSTALL_BASE_DIR}/pfsd/bin/mount_pfs_fuse.sh
+install -m 0755 deploy_scripts/umount_pfs_fuse.sh	${INSTALL_BASE_DIR}/pfsd/bin/umount_pfs_fuse.sh
 install -m 0755 deploy_scripts/clean_pfsd.sh		${INSTALL_BASE_DIR}/pfsd/bin/clean_pfsd.sh
 install -m 0755 src/pfsd/pfsd.init			/etc/init.d/pfsd_env
 install -m 0644 etc/polarfs.conf			/etc/polarfs.conf
