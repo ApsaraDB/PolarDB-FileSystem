@@ -758,7 +758,7 @@ pfsd_worker_handle_fallocate(pfsd_iochannel_t *ch, int req_index,
 	pfs_inode_t *inode = NULL;
 	PFSD_GET_MOUNT_AND_INODE(req->mntid, req->f_ino, rsp);
 
-	rsp->f_res = pfsd_fallocate_svr(mnt, inode, req->f_off, req->f_len, 0,
+	rsp->f_res = pfsd_fallocate_svr(mnt, inode, req->f_off, req->f_len, req->f_mode,
 	    req->common_pl_req.pl_btime);
 
 	PFSD_PUT_MOUNT_AND_INODE(mnt, inode);
