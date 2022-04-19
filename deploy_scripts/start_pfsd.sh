@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+usage(){
+    echo "[start_pfsd.sh] usage: "
+    echo "          sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p DISKNAME [other options]"
+    echo "example:"
+    echo "          sudo /usr/local/polarstore/pfsd/bin/start_pfsd.sh -p nvme1n1"
+    echo "logger location:"
+    echo "          /var/log/pfsd-DISKNAME/pfsd.log"
+}
+
 mkdir -p /var/run/pfs
 mkdir -p /var/run/pfsd
 mkdir -p /dev/shm/pfsd
@@ -30,6 +39,7 @@ exist_command="ps -ef | grep pfsdaemon |grep -w '$pbdname' | wc -l"
 exist=$(eval $exist_command)
 if [ $exist -ge 1 ]; then
     echo "$pbdname already exist"
+    usage
     exit 1
 fi
 
@@ -39,10 +49,11 @@ ${BASE_DIR}/../bin/pfsdaemon $* -c ${CONF_FILE}/pfsd_logger.conf
 
 sleep 1
 
-# check if start success 
+# check if start success
 exist=$(eval $exist_command)
 if [ $exist -eq 0 ]; then
     echo "pfsdaemon $pfsdname start failed"
+    usage
     exit 1
 fi
 

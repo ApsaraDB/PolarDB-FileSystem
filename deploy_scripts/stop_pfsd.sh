@@ -27,7 +27,7 @@ kill_single_pfsd() {
     kill -2 $pid
     sleep 1
 
-    # check if stop success, if not, use kill -9 
+    # check if stop success, if not, use kill -9
     exist=$(eval $exist_command)
     if [ $exist -eq 0 ]; then
         echo "$pfsdname stop success"
@@ -46,8 +46,8 @@ kill_single_pfsd() {
 }
 
 kill_all_pfsd() {
-    pkill -2 pfsdaemon		
-    sleep 1		
+    pkill -2 pfsdaemon
+    sleep 1
     cnt=`ps -ef | grep pfsdaemon |  grep -v grep  | wc -l`
     if [ $cnt -eq 0 ]; then
         echo "pkill -2 all pfsdaemon success"
