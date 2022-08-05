@@ -523,6 +523,12 @@ get_pbdsize(const char *pbdname)
 		    (unsigned long long)PBD_CHUNK_SIZE);
 		return -EIO;
 	}
+
+	if (pbd_disksize < PBD_CHUNK_SIZE) {
+		pfs_etrace("pbd disk size must be greater than %dGB!\n",
+		    PBD_CHUNK_SIZE >> 30);
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -623,7 +629,7 @@ getopt_mkfs(int argc, char *argv[], cmd_opts_t *co)
 			co_mkfs->force = true;
 			break;
 
-		case'h':
+		case 'h':
 		default:
 			return -1;
 		}
