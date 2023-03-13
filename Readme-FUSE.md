@@ -2,7 +2,7 @@
 
 Filesystem in USErspace (FUSE) is a software interface for Unix and Unix-like computer operating systems that lets non-privileged users create their own file systems without editing kernel code. This is achieved by running file system code in user space while the FUSE module provides only a bridge to the actual kernel interfaces.
 
-To allow users to use PFS with kernel interfaces like any other kernel built-in filesystems, we implement a FUSE on PFS handler program, which is linked to the supplied LibFUSE library. This program defines the request-respond mapping of kernal interfaces to pfs operations, which means it specify how PFS is to respond to read/write/stat requests. The program is also used to mount PFS. At the time PFS is mounted, the handler is registered with the kernel. If a user now issues read/write/stat requests for PFS, the kernel forwards these IO-requests to the handler and then sends the handler's response back to the user.
+To allow users to use PFS with kernel interfaces like any other kernel built-in filesystems, we implement a FUSE on PFS handler program, which is linked to the supplied LibFUSE library. This program defines the request-respond mapping of kernel interfaces to pfs operations, which means it specify how PFS is to respond to read/write/stat requests. The program is also used to mount PFS. At the time PFS is mounted, the handler is registered with the kernel. If a user now issues read/write/stat requests for PFS, the kernel forwards these IO-requests to the handler and then sends the handler's response back to the user.
 
 # Main FUSE Modules
 
