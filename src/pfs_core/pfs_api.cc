@@ -25,6 +25,7 @@
 #include <fcntl.h>
 
 #include "pfs_api.h"
+#include "pfs_fstream.h"
 #include "pfs_mount.h"
 #include "pfs_file.h"
 #include "pfs_dir.h"
@@ -126,6 +127,12 @@ pthread_mutex_t	rename_mtx;
 #define PATH_ARG(path)						\
 	(path) ? (path) : "NULL"
 
+#define PFS_STRM_MAKE(stream)					\
+	(FILE *)((uint64_t)(stream) | (uint64_t)(0x03))
+
+#define PFS_STRM_RAW(stream)					\
+	(FILE *)((uint64_t)(stream) & ~(uint64_t)(0x03))
+
 #define	API_ENTER(level, fmt, ...) do {				\
 	if (err != 0 && err != -EAGAIN) {			\
 		pfs_etrace("%s invalid args(" fmt ")\n",	\
@@ -167,6 +174,7 @@ static int error_number[] = {
 	EROFS,
 	EBUSY,
 	ERANGE,
+	ENOTSUP,
 	0,	/* sentinel */
 };
 
@@ -594,6 +602,15 @@ _pfs_setxattr(const char *pbdpath, const char *name, const void *value,
 
 	PUT_MOUNT_NAMEI(mnt, &ni);
 	return err;
+}
+
+static int
+_pfs_mkstemp(char *tmpl)
+{
+	int fd;
+
+	fd = gen_tempname(tmpl, 0, 0, PFS_INODET_FILE);
+	return fd;
 }
 
 static int
@@ -1277,6 +1294,27 @@ pfs_setxattr(const char *pbdpath, const char *name, const void *value,
 }
 
 int
+pfs_mkstemp(char *tmpl)
+{
+	int err = -EAGAIN;
+	int fd = -1;
+
+	if (!tmpl)
+		err = -EINVAL;
+	API_ENTER(DEBUG, "%s", PATH_ARG(tmpl));
+
+	while (err == -EAGAIN) {
+		fd = _pfs_mkstemp(tmpl);
+		err = fd < 0 ? fd : 0;
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	return fd;
+}
+
+int
 pfs_fmap(int fd, fmap_entry_t *fmapv, int count)
 {
 	int err = -EAGAIN;
@@ -1603,5 +1641,386 @@ pfs_du(const char *pbdpath, int all, int depth, pfs_printer_t *printer)
 	API_EXIT(err);
 	if (err < 0)
 		return -1;
+	return 0;
+}
+
+static int
+_pfs_fopen(const char *pbdpath, const char *mode, FILE **streamp)
+{
+	pfs_fstrm_t **fstrmp = (pfs_fstrm_t **)streamp;
+	int err;
+
+	err = pfs_fstrm_open(pbdpath, mode, fstrmp);
+	return err;
+}
+
+static int
+_pfs_fclose(FILE *stream)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xclose(fstrm);
+	return err;
+}
+
+static int
+_pfs_fgetc(FILE *stream, char *c)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	size_t nitem;
+	int err;
+
+	err = pfs_fstrm_xread(fstrm, c, 1, 1, &nitem);
+	if (err == 0 && nitem == 0)
+		err = EOF;
+	PFS_ASSERT(err < 0 || nitem == 1);
+	return err;
+}
+
+static int
+_pfs_fread(FILE *stream, void *buf, size_t size, size_t nmemb, size_t *nitemp)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xread(fstrm, buf, size, nmemb, nitemp);
+	return err;
+}
+
+static int
+_pfs_fwrite(FILE *stream, const void *buf, size_t size, size_t nmemb, size_t *nitemp)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xwrite(fstrm, buf, size, nmemb, nitemp);
+	return err;
+}
+
+static int
+_pfs_fflush(FILE *stream)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xflush(fstrm);
+	return err;
+}
+
+static int
+_pfs_rewind(FILE *stream)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	off_t newoff;
+	int err;
+
+	newoff = pfs_fstrm_xseekoff(fstrm, 0, SEEK_SET, true, true);
+	err = newoff < 0 ? newoff : 0;
+	return err;
+}
+
+static int
+_pfs_fseek(FILE *stream, off_t offset, int whence)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	off_t newoff;
+	int err;
+
+	newoff = pfs_fstrm_xseekoff(fstrm, offset, whence, true, false);
+	err = newoff < 0 ? newoff : 0;
+	return err;
+}
+
+static int
+_pfs_ftell(FILE *stream, off_t *offset)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	off_t newoff;
+	int err;
+
+	newoff = pfs_fstrm_xseekoff(fstrm, 0, SEEK_CUR, false, false);
+	err = newoff < 0 ? newoff : 0;
+	if (err < 0)
+		return err;
+	*offset = newoff;
+	return 0;
+}
+
+static int
+_pfs_feof(FILE *stream, bool *iseof)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xeof(fstrm, iseof);
+	return err;
+}
+
+static int
+_pfs_fileno(FILE *stream, int *fileno)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xfileno(fstrm, fileno);
+	return err;
+}
+
+static int
+_pfs_ferror(FILE *stream, bool *haserr)
+{
+	pfs_fstrm_t *fstrm = (pfs_fstrm_t *)stream;
+	int err;
+
+	err = pfs_fstrm_xerror(fstrm, haserr);
+	return err;
+}
+
+FILE *
+pfs_fopen(const char *pbdpath, const char *mode)
+{
+	int err = -EAGAIN;
+	FILE *stream = NULL;
+
+	if (!pbdpath || !mode)
+		err = -EINVAL;
+	API_ENTER(INFO, "%s, %s", PATH_ARG(pbdpath), PATH_ARG(mode));
+
+	while (err == -EAGAIN) {
+		err = _pfs_fopen(pbdpath, mode, &stream);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return NULL;
+
+	stream = PFS_STRM_MAKE(stream);
+	return stream;
+}
+
+int
+pfs_fclose(FILE *stream)
+{
+	int err = -EAGAIN;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fclose(stream);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return EOF;
+	return 0;
+}
+
+int
+pfs_fgetc(FILE *stream)
+{
+	int err = -EAGAIN;
+	char rchar;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fgetc(stream, &rchar);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return err;
+	return (int)rchar;
+}
+
+size_t
+pfs_fread(void *buf, size_t size, size_t nmemb, FILE *stream)
+{
+	int err = -EAGAIN;
+	size_t nitem = 0;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	else if (!buf)
+		err = -EINVAL;
+	API_ENTER(DEBUG, "%p, %lu, %lu, %p", buf, size, nmemb, stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fread(stream, buf, size, nmemb, &nitem);
+	}
+
+	API_EXIT(err);
+	return nitem;
+}
+
+size_t
+pfs_fwrite(const void *buf, size_t size, size_t nmemb, FILE *stream)
+{
+	int err = -EAGAIN;
+	size_t nitem = 0;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	else if (!buf)
+		err = -EINVAL;
+	API_ENTER(DEBUG, "%p, %lu, %lu, %p", buf, size, nmemb, stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fwrite(stream, buf, size, nmemb, &nitem);
+	}
+
+	API_EXIT(err);
+	return nitem;
+}
+
+int
+pfs_fflush(FILE *stream)
+{
+	int err = -EAGAIN;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fflush(stream);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return EOF;
+	return 0;
+}
+
+void
+pfs_rewind(FILE *stream)
+{
+	int err = -EAGAIN;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_rewind(stream);
+	}
+
+	API_EXIT(err);
+}
+
+int
+pfs_fseek(FILE *stream, off_t offset, int whence)
+{
+	int err = -EAGAIN;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p, %lu, %lu", stream, offset, whence);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fseek(stream, offset, whence);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	return 0;
+}
+
+off_t
+pfs_ftell(FILE *stream)
+{
+	int err = -EAGAIN;
+	off_t offset = -1;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_ftell(stream, &offset);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	return offset;
+}
+
+int
+pfs_feof(FILE *stream)
+{
+	int err = -EAGAIN;
+	bool iseof = false;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_feof(stream, &iseof);
+	}
+
+	API_EXIT(err);
+	if (iseof)
+		return 1;
+	return 0;
+}
+
+int
+pfs_fileno(FILE *stream)
+{
+	int err = -EAGAIN;
+	int fileno = -1;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+	API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_fileno(stream, &fileno);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	return fileno;
+}
+
+int
+pfs_ferror(FILE *stream)
+{
+	int err = -EAGAIN;
+	bool haserr = true;
+
+	if (!PFS_STRM_ISVALID(stream))
+		err = -EBADF;
+       API_ENTER(DEBUG, "%p", stream);
+
+	stream = PFS_STRM_RAW(stream);
+	while (err == -EAGAIN) {
+		err = _pfs_ferror(stream, &haserr);
+	}
+
+	API_EXIT(err);
+	if (err < 0)
+		return -1;
+	if (haserr)
+		return 1;
 	return 0;
 }

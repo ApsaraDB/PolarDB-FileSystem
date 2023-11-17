@@ -47,6 +47,7 @@ set(SRC_LIST
     pfs_version.cc
     pfs_chunk.cc
     pfs_avl.cc
+    pfs_fstream.cc
 )
 
 # lib pfs
