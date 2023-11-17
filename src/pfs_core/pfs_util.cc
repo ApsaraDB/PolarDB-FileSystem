@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <execinfo.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -25,6 +26,9 @@
 
 #include "pfs_impl.h"
 #include "pfs_util.h"
+#include "pfs_api.h"
+#include "pfs_impl.h"
+#include "pfs_inode.h"
 #include "pfs_memory.h"
 #include "pfs_trace.h"
 
@@ -236,6 +240,65 @@ oidvect_fini(oidvect_t *ov)
 	}
 	ov->ov_next = 0;
 	ov->ov_size = 0;
+}
+
+static const char letters[] =
+"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+#define NLETTER		62
+
+int
+gen_tempname(char *tmpl, int suffixlen, int flags, int type)
+{
+	int save_errno = errno;
+	int fd = -1;
+	int len;
+	char *XXXXXX;
+	uint64_t random, retry, nretry;
+
+	len = strlen(tmpl);
+	if (len < 6 + suffixlen || memcmp(&tmpl[len - 6 - suffixlen], "XXXXXX", 6))
+		ERR_RETVAL(EINVAL);
+	XXXXXX = &tmpl[len - 6 - suffixlen];
+
+	random = (uint64_t)time(NULL) ^ (uint64_t)pthread_self();
+	nretry = TMP_MAX;
+	for (retry = 0; retry < nretry; random += 7777, ++retry) {
+
+		for (int i = 0; i < 6; i++) {
+			XXXXXX[i] = letters[random % NLETTER];
+			random /= NLETTER;
+		}
+
+		switch (type) {
+		case PFS_INODET_FILE:
+			fd = pfs_open(tmpl,
+				 (flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL,
+				 S_IRUSR|S_IWUSR);
+			break;
+
+		case PFS_INODET_DIR:
+			ERR_RETVAL(ENOTSUP);
+
+		default:
+			pfs_etrace("invalid type %d to generate temp file\n", type);
+			PFS_ASSERT("invalid argument" == NULL);
+		}
+
+		if (fd < 0 && errno != EEXIST)
+			ERR_RETVAL(errno);
+
+		if (fd >= 0)
+			break;
+
+		/* file exist, retry */
+	}
+
+	PFS_ASSERT(fd >= 0 || retry >= nretry);
+	if (retry >= nretry)
+		ERR_RETVAL(EEXIST);
+
+	errno = save_errno;
+	return fd;
 }
 
 int

@@ -86,6 +86,7 @@ static pfs_memtype_t	pfs_mem_type[M_NTYPE] = {
 	MEMTYPE_ENTRY(M_CONFIG_KV),
 	MEMTYPE_ENTRY(M_FDTBL_PTR),
 	MEMTYPE_ENTRY(M_INODE_BLK_TABLE),
+	MEMTYPE_ENTRY(M_FSTRM),
 };
 
 static inline const char *

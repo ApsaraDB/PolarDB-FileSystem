@@ -24,6 +24,7 @@ uint64_t	roundup_power2(uint64_t val);
 int		strncpy_safe(char *dst, const char *src, size_t n);
 uint32_t	crc32c_compute(const void *buf, size_t size, size_t offset);
 uint64_t	gettimeofday_us();
+int		gen_tempname(char *tmpl, int suffixlen, int flags, int type);
 
 #define	DATA_SET_ATTR(set)	 	\
        	__attribute__((used)) 		\

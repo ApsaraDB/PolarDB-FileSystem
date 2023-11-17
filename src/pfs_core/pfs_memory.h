@@ -71,6 +71,7 @@ enum {
 	M_CONFIG_KV,
 	M_FDTBL_PTR,
 	M_INODE_BLK_TABLE,
+	M_FSTRM,
 
 	M_NTYPE
 };

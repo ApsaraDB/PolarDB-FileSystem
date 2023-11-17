@@ -80,6 +80,7 @@ int	pfs_fallocate(int fd, int mode, off_t offset, off_t len);
 off_t	pfs_lseek(int fd, off_t offset, int whence);
 int	pfs_setxattr(const char *pbdpath, const char *name, const void *value,
 	    size_t size, int flags);
+int	pfs_mkstemp(char *tmpl);
 
 /* directory */
 int	pfs_mkdir(const char *pbdpath, mode_t mode);
@@ -109,6 +110,20 @@ struct direntplus {
 };
 struct direntplus *pfs_readdirplus(DIR *dir);
 
+/* file stream */
+FILE   *pfs_fopen(const char *pbdpath, const char *mode);
+int    pfs_fclose(FILE *stream);
+int    pfs_fgetc(FILE *stream);
+size_t pfs_fread(void *buf, size_t size, size_t nmemb, FILE *stream);
+size_t pfs_fwrite(const void *buf, size_t size, size_t nmemb, FILE *stream);
+int    pfs_fflush(FILE *stream);
+void   pfs_rewind(FILE *stream);
+int    pfs_fseek(FILE *stream, off_t offset, int whence);
+off_t  pfs_ftell(FILE *stream);
+int    pfs_feof(FILE *stream);
+int    pfs_fileno(FILE *stream);
+int    pfs_ferror(FILE *stream);
+
 #ifdef __cplusplus
 }
 #endif
@@ -137,10 +152,18 @@ struct direntplus *pfs_readdirplus(DIR *dir);
 #define PFS_DIR_ISVALID(dir)						\
 	( (dir) && ( (intptr_t)(dir) & 0x01 ) )
 
+#define PFS_STRM_ISVALID(stream)					\
+	( (stream) && ( (intptr_t)(stream) & 0x03 ) )
+
 #define	MYSQL_CALL(type, func, arg1, ...) 	\
 	( PFS_##type##_ISVALID((arg1)) 		\
 	  ? pfs_##func(arg1, ##__VA_ARGS__) 	\
 	  : func(arg1, ##__VA_ARGS__))
+
+#define MYSQL_CALL_2(type, func, arg1, ...)	\
+	( PFS_##type##_ISVALID((arg1))		\
+	 ? pfs_##func(__VA_ARGS__, arg1)	\
+	 : func(__VA_ARGS__, arg1))
 
 #define MYSQLAPI_CREAT(path, mode)					\
 	MYSQL_CALL(PATH, creat, path, mode)
@@ -189,6 +212,9 @@ struct direntplus *pfs_readdirplus(DIR *dir);
 
 #define MYSQLAPI_SETXATTR(path, name, value, size, flags)		\
 	MYSQL_CALL(PATH, setxattr, path, name, value, size, flags)
+
+#define MYSQLAPI_MKSTEMP(tmpl)						\
+	pfs_mkstemp(tmpl)
 
 #define MYSQLAPI_MKDIR(path, mode)					\
 	MYSQL_CALL(PATH, mkdir, path, mode)
@@ -241,6 +267,41 @@ struct direntplus *pfs_readdirplus(DIR *dir);
 #define MYSQLAPI_CHOWN(path, owner, group)				\
 	MYSQL_CALL(PATH, chown, path, owner, group)
 
+#define MYSQLAPI_FOPEN(path, mode)					\
+	MYSQL_CALL(PATH, fopen, path, mode)
+
+#define MYSQLAPI_FCLOSE(stream)						\
+	MYSQL_CALL(STRM, fclose, stream)
+
+#define MYSQLAPI_FGETC(stream)						\
+	MYSQL_CALL(STRM, fgetc, stream)
+
+#define MYSQLAPI_FREAD(buf, size, nmemb, stream)			\
+	MYSQL_CALL_2(STRM, fread, stream, buf, size, nmemb)
+
+#define MYSQLAPI_FWRITE(buf, size, nmemb, stream)			\
+	MYSQL_CALL_2(STRM, fwrite, stream, buf, size, nmemb)
+
+#define MYSQLAPI_FFLUSH(stream)						\
+	MYSQL_CALL(STRM, fflush, stream)
+
+#define MYSQLAPI_REWIND(stream)						\
+	MYSQL_CALL(STRM, rewind, stream)
+
+#define MYSQLAPI_FSEEK(stream, offset, whence)				\
+	MYSQL_CALL(STRM, fseek, stream, offset, whence)
+
+#define MYSQLAPI_FTELL(stream)						\
+	MYSQL_CALL(STRM, ftell, stream)
+
+#define MYSQLAPI_FEOF(stream)						\
+	MYSQL_CALL(STRM, feof, stream)
+
+#define MYSQLAPI_FILENO(stream)						\
+	MYSQL_CALL(STRM, fileno, stream)
+
+#define MYSQLAPI_FERROR(stream)						\
+	MYSQL_CALL(STRM, ferror, stream)
 
 // Errno
 enum PFSErrCode {
